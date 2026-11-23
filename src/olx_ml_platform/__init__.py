@@ -1,2 +1,4 @@
 def main() -> None:
-    print("Hello from olx-ml-platform!")
+    from cli.main import main as cli_main
+
+    cli_main()
