@@ -1,1 +1,1 @@
-# Pinned Iris example dependencies are added with the training implementation.
+scikit-learn==1.8.0

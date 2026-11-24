@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from uuid import UUID
+
 from domain.models import FailureReason
 
 
 class ApplicationError(Exception):
     code = "application_error"
     failure_reason: FailureReason | None = None
+
+    def __init__(self, message: str, *, run_id: UUID | None = None) -> None:
+        super().__init__(message)
+        self.run_id = run_id
 
 
 class ValidationError(ApplicationError):
@@ -17,10 +23,30 @@ class ImageBuildError(ApplicationError):
     code = "image_build_error"
     failure_reason = FailureReason.IMAGE_BUILD_ERROR
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        run_id: UUID | None = None,
+        logs: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message, run_id=run_id)
+        self.logs = logs
+
 
 class ImageBuildTimeout(ApplicationError):
     code = "image_build_timeout"
     failure_reason = FailureReason.IMAGE_BUILD_TIMEOUT
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        run_id: UUID | None = None,
+        logs: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message, run_id=run_id)
+        self.logs = logs
 
 
 class TrainingError(ApplicationError):
@@ -55,6 +81,14 @@ class MissingOutputError(ApplicationError):
 
 class InferenceError(ApplicationError):
     code = "inference_error"
+
+
+class ModelUnavailableError(ApplicationError):
+    code = "model_unavailable"
+
+
+class ExecutionNotFoundError(ApplicationError):
+    code = "execution_not_found"
 
 
 def failure_reason_for(error: ApplicationError) -> FailureReason:

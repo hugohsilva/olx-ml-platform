@@ -1,6 +1,8 @@
 .github*
 .specify*
 specs*
+specs/
+.specify/
 .venv/
 __pycache__/
 *.py[cod]

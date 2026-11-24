@@ -36,7 +36,15 @@ def register_command(
     application.command(name=name, help=help)(command)
 
 
-app = create_app()
+def _default_command_registrars() -> tuple[CommandRegistrar, ...]:
+    from cli.commands.executions import register_commands as register_execution_commands
+    from cli.commands.serve import register_commands as register_serve_commands
+    from cli.commands.train import register_commands as register_training_commands
+
+    return (register_training_commands, register_execution_commands, register_serve_commands)
+
+
+app = create_app(_default_command_registrars())
 
 
 def main() -> None:

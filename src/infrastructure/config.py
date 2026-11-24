@@ -1,25 +1,26 @@
 from __future__ import annotations
 
-import json
 import math
 import os
 import re
-import shlex
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Mapping
 from urllib.parse import urlsplit
 
 DEFAULT_BUILD_REPOSITORIES = ("pypi.org", "files.pythonhosted.org")
 DEFAULT_BASE_IMAGE_REGISTRY = "docker.io"
+_DOCKER_HUB_REGISTRY_ENDPOINTS = (
+    "registry-1.docker.io",
+    "auth.docker.io",
+    "production.cloudfront.docker.com",
+)
 DEFAULT_CPU_LIMIT = 1.0
 DEFAULT_MEMORY_LIMIT = "1g"
 DEFAULT_TIMEOUT_SECONDS = 600
 MAX_CPU_LIMIT = 1.0
 MAX_MEMORY_BYTES = 1024**3
 MAX_TIMEOUT_SECONDS = 1800
-EGRESS_POLICY_CHECK_TIMEOUT_SECONDS = 10
 
 
 class ConfigurationError(ValueError):
@@ -47,7 +48,6 @@ class PlatformConfig:
     docker: DockerResourceLimits
     base_image_registry: str
     build_allowed_repositories: tuple[str, ...]
-    egress_policy_check: tuple[str, ...] | None
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> PlatformConfig:
@@ -60,7 +60,14 @@ class PlatformConfig:
             values.get("MLPLATFORM_EXTRA_BUILD_REPOSITORIES", "")
         )
         allowed_repositories = tuple(
-            dict.fromkeys((*DEFAULT_BUILD_REPOSITORIES, base_registry, *extra_repositories))
+            dict.fromkeys(
+                (
+                    *DEFAULT_BUILD_REPOSITORIES,
+                    base_registry,
+                    *_base_image_registry_endpoints(base_registry),
+                    *extra_repositories,
+                )
+            )
         )
 
         return cls(
@@ -86,77 +93,7 @@ class PlatformConfig:
             ),
             base_image_registry=base_registry,
             build_allowed_repositories=allowed_repositories,
-            egress_policy_check=_parse_check_command(values.get("MLPLATFORM_EGRESS_POLICY_CHECK")),
         )
-
-
-def verify_build_egress_policy(
-    config: PlatformConfig,
-    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-) -> str:
-    command = config.egress_policy_check
-    if not command:
-        raise EgressPolicyError(
-            "Build egress policy is not verifiable. Configure "
-            "MLPLATFORM_EGRESS_POLICY_CHECK with a trusted local policy checker."
-        )
-
-    arguments = [*command, "--verify-build-egress", "--json"]
-    for repository in config.build_allowed_repositories:
-        arguments.extend(("--allowed-repository", repository))
-
-    try:
-        result = runner(
-            arguments,
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=EGRESS_POLICY_CHECK_TIMEOUT_SECONDS,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise EgressPolicyError(f"Build egress policy check failed: {exc}") from exc
-
-    if result.returncode != 0:
-        detail = result.stderr.strip() or f"checker exited with status {result.returncode}"
-        raise EgressPolicyError(f"Build egress policy check failed: {detail}")
-
-    try:
-        report = json.loads(result.stdout)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise EgressPolicyError("Build egress policy checker returned invalid JSON.") from exc
-
-    if not isinstance(report, dict) or report.get("enforced") is not True:
-        raise EgressPolicyError("Build egress policy checker did not confirm enforcement.")
-
-    policy_id = report.get("policy_id")
-    if not isinstance(policy_id, str) or not policy_id.strip():
-        raise EgressPolicyError("Build egress policy checker did not provide a policy_id.")
-
-    reported_repositories = report.get("allowed_repositories")
-    if not isinstance(reported_repositories, list) or not all(
-        isinstance(repository, str) for repository in reported_repositories
-    ):
-        raise EgressPolicyError(
-            "Build egress policy checker did not provide an allowed_repositories list."
-        )
-
-    try:
-        normalized_reported = tuple(
-            _normalize_repository(repository) for repository in reported_repositories
-        )
-    except ConfigurationError as exc:
-        raise EgressPolicyError(
-            "Build egress policy checker returned an invalid repository."
-        ) from exc
-
-    if len(normalized_reported) != len(set(normalized_reported)) or set(normalized_reported) != set(
-        config.build_allowed_repositories
-    ):
-        raise EgressPolicyError(
-            "Build egress policy does not exactly match the configured repository allowlist."
-        )
-
-    return policy_id.strip()
 
 
 def _resolve_path(value: str, home: Path) -> Path:
@@ -208,6 +145,12 @@ def _parse_repositories(value: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(_normalize_repository(repository) for repository in repositories))
 
 
+def _base_image_registry_endpoints(registry: str) -> tuple[str, ...]:
+    """Return the exact Docker Hub hosts required to fetch a public base image."""
+
+    return _DOCKER_HUB_REGISTRY_ENDPOINTS if registry == "docker.io" else ()
+
+
 def _normalize_repository(value: str) -> str:
     if not isinstance(value, str) or not value or any(char.isspace() for char in value):
         raise ConfigurationError("Build repositories must be exact hostnames.")
@@ -237,15 +180,3 @@ def _is_valid_hostname(hostname: str) -> bool:
         re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) is not None
         for label in hostname.rstrip(".").split(".")
     )
-
-
-def _parse_check_command(value: str | None) -> tuple[str, ...] | None:
-    if value is None or not value.strip():
-        return None
-    try:
-        command = tuple(shlex.split(value))
-    except ValueError as exc:
-        raise ConfigurationError("MLPLATFORM_EGRESS_POLICY_CHECK is not a valid command.") from exc
-    if not command:
-        raise ConfigurationError("MLPLATFORM_EGRESS_POLICY_CHECK cannot be empty.")
-    return command

@@ -143,6 +143,12 @@ class SQLiteExecutionRepository:
             failure_message=row["failure_message"],
         )
 
+    def list_runs(self) -> tuple[Run, ...]:
+        rows = self._connection.execute(
+            "SELECT run_id FROM runs ORDER BY created_at DESC, run_id ASC"
+        ).fetchall()
+        return tuple(run for row in rows if (run := self.get_run(UUID(row["run_id"]))) is not None)
+
 
 def _dump_json(value: object) -> str:
     return json.dumps(
